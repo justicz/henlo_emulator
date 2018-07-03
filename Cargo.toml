@@ -1,0 +1,6 @@
+[package]
+name = "henlo_emulator"
+version = "0.1.0"
+authors = ["Max Justicz <max@justi.cz>"]
+
+[dependencies]
