@@ -4,10 +4,10 @@ use std::fs::File;
 
 #[derive(Debug)]
 enum Register {
-    Acc,
     Reg0,
-    Reg1,
-    Reg2
+    RegFP,
+    RegSP,
+    RegAcc
 }
 
 #[derive(Debug)]
@@ -18,10 +18,10 @@ struct Immediate {
 impl Register {
     fn from_code(code: u8) -> Register {
         match code {
-            0b00 => Register::Reg0,
-            0b01 => Register::Reg1,
-            0b10 => Register::Reg2,
-            0b11 => Register::Acc,
+            0x0 => Register::Reg0,
+            0x1 => Register::RegFP,
+            0x2 => Register::RegSP,
+            0x3 => Register::RegAcc,
             _ => panic!("Invalid register")
         }
     }
@@ -37,8 +37,13 @@ enum Instruction {
     LD1(Register, Register),
     ST0(Register, Register),
     ST1(Register, Register),
-    JNEZ(Register, Register),
-    RJNEZ(Register, Register)
+    BNEZ(Register, Register),
+    JMP(Register),
+    SH48(Immediate),
+    AND(Register, Register),
+    OR(Register, Register),
+    XOR(Register, Register),
+    NEG(Register)
 }
 
 impl Instruction {
@@ -49,16 +54,21 @@ impl Instruction {
         let imm = Immediate { value: byte & 15 };
 
         match opcode {
-            0b1000 => Instruction::Add(reg_x, reg_y),
-            0b1001 => Instruction::AddI(imm),
-            0b1010 => Instruction::Mul(reg_x, reg_y),
-            0b1011 => Instruction::MulI(imm),
-            0b0000 => Instruction::LD0(reg_x, reg_y),
-            0b0001 => Instruction::LD1(reg_x, reg_y),
-            0b0010 => Instruction::ST0(reg_x, reg_y),
-            0b0011 => Instruction::ST1(reg_x, reg_y),
-            0b0100 => Instruction::JNEZ(reg_x, reg_y),
-            0b0101 => Instruction::RJNEZ(reg_x, reg_y),
+            0x0 => Instruction::Add(reg_x, reg_y),
+            0x1 => Instruction::AddI(imm),
+            0x2 => Instruction::Mul(reg_x, reg_y),
+            0x3 => Instruction::MulI(imm),
+            0x4 => Instruction::LD0(reg_x, reg_y),
+            0x5 => Instruction::LD1(reg_x, reg_y),
+            0x6 => Instruction::ST0(reg_x, reg_y),
+            0x7 => Instruction::ST1(reg_x, reg_y),
+            0x8 => Instruction::BNEZ(reg_x, reg_y),
+            0x9 => Instruction::JMP(reg_x),
+            0xa => Instruction::SH48(imm),
+            0xb => Instruction::AND(reg_x, reg_y),
+            0xc => Instruction::OR(reg_x, reg_y),
+            0xd => Instruction::XOR(reg_x, reg_y),
+            0xe => Instruction::NEG(reg_x),
             _ => panic!("Invalid opcode")
         }
     }
@@ -68,8 +78,8 @@ impl Instruction {
 struct Processor {
     pc: u16,
     reg0: u16,
-    reg1: u16,
-    reg2: u16,
+    fp: u16,
+    sp: u16,
     acc: u16
 }
 
@@ -81,23 +91,23 @@ impl Processor {
 
         match instruction {
             Instruction::Add(ref reg_x, ref reg_y) => {
-                let new_value = self.read_register(&Register::Acc).wrapping_add(self.read_register(reg_x));
+                let new_value = self.read_register(&Register::RegAcc).wrapping_add(self.read_register(reg_x));
                 self.write_register(reg_y, new_value);
             },
 
             Instruction::AddI(ref imm) => {
-                let new_value = self.read_register(&Register::Acc).wrapping_add(imm.value as u16);
-                self.write_register(&Register::Acc, new_value);
+                let new_value = self.read_register(&Register::RegAcc).wrapping_add(imm.value as u16);
+                self.write_register(&Register::RegAcc, new_value);
             },
 
             Instruction::Mul(ref reg_x, ref reg_y) => {
-                let new_value = self.read_register(&Register::Acc).wrapping_mul(self.read_register(reg_x));
+                let new_value = self.read_register(&Register::RegAcc).wrapping_mul(self.read_register(reg_x));
                 self.write_register(reg_y, new_value);
             },
 
             Instruction::MulI(ref imm) => {
-                let new_value = self.read_register(&Register::Acc).wrapping_mul(imm.value as u16);
-                self.write_register(&Register::Acc, new_value);
+                let new_value = self.read_register(&Register::RegAcc).wrapping_mul(imm.value as u16);
+                self.write_register(&Register::RegAcc, new_value);
             },
 
             Instruction::LD0(ref reg_x, ref reg_y) => {
@@ -122,20 +132,50 @@ impl Processor {
                 ram_1[store_address] = self.read_register(reg_x) as u8;
             },
             
-            Instruction::JNEZ(ref reg_x, ref reg_y) => {
+            Instruction::BNEZ(ref reg_x, ref reg_y) => {
                 let reg_x_value = self.read_register(reg_x);
                 let reg_y_value = self.read_register(reg_y);
                 if reg_x_value != 0 {
                     self.pc = reg_y_value;
                 }
             },
-
-            Instruction::RJNEZ(ref reg_x, ref reg_y) => {
+            Instruction::JMP(ref reg_x) => {
                 let reg_x_value = self.read_register(reg_x);
-                let reg_y_value = self.read_register(reg_y);
-                if reg_x_value != 0 {
-                    self.pc += reg_y_value;
+                self.pc = reg_x_value;
+            },
+            Instruction::SH48(ref imm) => {
+                let imm = imm.value as u16;
+                let old_value = self.read_register(&Register::RegAcc);
+                let mut new_value = 0;
+                if imm == 12 {
+                    new_value = old_value << 4;
+                } else if imm == 14 {
+                    new_value = old_value << 8;
+                } else if imm == 4 {
+                    new_value = old_value >> 4;
+                } else if imm == 6 {
+                    new_value = old_value >> 8;
                 }
+                self.write_register(&Register::RegAcc, new_value);
+            },
+            Instruction::AND(ref reg_x, ref reg_y) => {
+                let reg_x_value = self.read_register(reg_x);
+                let acc_value = self.read_register(&Register::RegAcc);
+                self.write_register(reg_y, reg_x_value & acc_value);
+            },
+            Instruction::OR(ref reg_x, ref reg_y) => {
+                let reg_x_value = self.read_register(reg_x);
+                let acc_value = self.read_register(&Register::RegAcc);
+                self.write_register(reg_y, reg_x_value | acc_value);
+            },
+            Instruction::XOR(ref reg_x, ref reg_y) => {
+                let reg_x_value = self.read_register(reg_x);
+                let acc_value = self.read_register(&Register::RegAcc);
+                self.write_register(reg_y, reg_x_value ^ acc_value);
+            },
+            Instruction::NEG(ref reg_x) => {
+                let acc_value = self.read_register(&Register::RegAcc);
+                self.write_register(reg_x, (acc_value ^ 0xFFFF).wrapping_add(1));
             }
         }
     }
@@ -143,18 +183,18 @@ impl Processor {
     fn write_register(&mut self, register: &Register, val: u16) {
         match *register {
             Register::Reg0 => self.reg0 = val,
-            Register::Reg1 => self.reg1 = val,
-            Register::Reg2 => self.reg2 = val,
-            Register::Acc => self.acc = val
+            Register::RegFP => self.fp = val,
+            Register::RegSP => self.sp = val,
+            Register::RegAcc => self.acc = val
         }
     }
 
     fn read_register(&self, register: &Register) -> u16 {
         match *register {
             Register::Reg0 => self.reg0,
-            Register::Reg1 => self.reg1,
-            Register::Reg2 => self.reg2,
-            Register::Acc => self.acc
+            Register::RegFP => self.fp,
+            Register::RegSP => self.sp,
+            Register::RegAcc => self.acc
         }
     }
 }
@@ -164,7 +204,7 @@ fn main() {
     let mut ram_0: [u8; 65536] = [0; 65536];
     let mut ram_1: [u8; 65536] = [0; 65536];
 
-    let program = File::open("src/tpt.bin").unwrap();
+    let program = File::open("/tmp/henlo.bin").unwrap();
 
     for (i, byte) in program.bytes().enumerate() {
         if i > rom.len() - 1 {
@@ -179,12 +219,12 @@ fn main() {
         pc: 0,
         acc: 0,
         reg0: 0,
-        reg1: 0,
-        reg2: 0
+        fp: 0,
+        sp: 0
     };
 
     let start = Instant::now();
-    for _ in 1..100 {
+    for _ in 1..30 {
         processor.execute_next(&rom, &mut ram_0, &mut ram_1);
         println!("{:?}", processor);
     }
