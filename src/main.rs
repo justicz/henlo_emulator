@@ -31,8 +31,8 @@ impl Register {
             0x1 => Register::Reg1,
             0x2 => Register::Reg2,
             0x3 => Register::Reg3,
-            0x4 => Register::RegSP,
-            0x5 => Register::RegFP,
+            0x4 => Register::RegFP,
+            0x5 => Register::RegSP,
             0x6 => Register::RegAC,
             0x7 => Register::RegPC,
             _ => panic!("Invalid register")
@@ -58,6 +58,7 @@ enum Instruction {
     LD(Register, Register),
     ST(Register, Register),
 
+    JMP(Register, JMPFlag),
     BZ(Register, Register, JMPFlag),
     BNZ(Register, Register, JMPFlag),
 
@@ -99,8 +100,9 @@ impl Instruction {
             0x9 => Instruction::LD(reg_x, reg_y),
             0xa => Instruction::ST(reg_x, reg_y),
             
-            0xb => Instruction::BZ(reg_x, reg_y, jmp_flag),
-            0xc => Instruction::BNZ(reg_x, reg_y, jmp_flag),
+            0xb => Instruction::JMP(reg_x, jmp_flag),
+            0xc => Instruction::BZ(reg_x, reg_y, jmp_flag),
+            0xd => Instruction::BNZ(reg_x, reg_y, jmp_flag),
 
             0xf => Instruction::HLT(),
             _ => panic!("Invalid opcode")
@@ -155,19 +157,30 @@ impl Processor {
             Instruction::LD(ref reg_x, ref reg_y) => {
                 let load_address = self.read_register(reg_x) as usize;
                 let new_value = ram[load_address];
+                println!("LOADING {} from {}", new_value, load_address);
                 self.write_register(reg_y, new_value as u16);
             },
 
             Instruction::ST(ref reg_x, ref reg_y) => {
                 let store_address = self.read_register(reg_y) as usize;
+                println!("STORING {} at {}", self.read_register(reg_x), store_address);
                 ram[store_address] = self.read_register(reg_x) as u16;
             },
 
+            Instruction::JMP(ref reg_x, ref jmp_flag) => {
+                let reg_x_value = self.read_register(reg_x);
+
+                if jmp_flag.relative {
+                    self.pc = self.pc.wrapping_add(reg_x_value);
+                } else {
+                    self.pc = reg_x_value;
+                }
+            }
             Instruction::BZ(ref reg_x, ref reg_y, ref jmp_flag) => {
                 let reg_x_value = self.read_register(reg_x);
                 let reg_y_value = self.read_register(reg_y);
 
-                if self.read_register(reg_x) == 0 {
+                if reg_x_value == 0 {
                     if jmp_flag.relative {
                         self.pc = self.pc.wrapping_add(reg_y_value);
                     } else {
@@ -179,7 +192,7 @@ impl Processor {
                 let reg_x_value = self.read_register(reg_x);
                 let reg_y_value = self.read_register(reg_y);
 
-                if self.read_register(reg_x) != 0 {
+                if reg_x_value != 0 {
                     if jmp_flag.relative {
                         self.pc = self.pc.wrapping_add(reg_y_value);
                     } else {
@@ -239,7 +252,7 @@ impl Processor {
 }
 
 fn main() {
-    let mut rom: [u16; 65536] = [0xFF; 65536];
+    let mut rom: [u16; 65536] = [0xFFFF; 65536];
     let mut ram: [u16; 65536] = [0; 65536];
 
     let mut program = File::open("/tmp/henlo.bin").unwrap();
@@ -259,6 +272,7 @@ fn main() {
             }
         }
         rom[i] = (bbuf[0] as u16) * 256 + (bbuf[1] as u16);
+        println!("{}: {:?}", i, Instruction::from_word(rom[i]));
         i += 1;
     }
 
@@ -274,7 +288,7 @@ fn main() {
     };
 
     let start = Instant::now();
-    for _ in 1..100 {
+    for _ in 1..10000 {
         println!("{:?} {:?}", processor, Instruction::from_word(rom[processor.pc as usize]));
         processor.execute_next(&rom, &mut ram);
     }
