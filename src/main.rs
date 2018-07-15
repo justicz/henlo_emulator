@@ -20,8 +20,19 @@ struct Immediate {
 }
 
 #[derive(Debug)]
-struct JMPFlag {
+struct JMPFlags {
     relative: bool
+}
+
+#[derive(Debug)]
+struct NEGFlags {
+    signed: bool
+}
+
+#[derive(Debug)]
+struct ADDFlags {
+    first_arg_sign_extend: bool,
+    second_arg_sign_extend: bool
 }
 
 impl Register {
@@ -42,7 +53,7 @@ impl Register {
 
 #[derive(Debug)]
 enum Instruction {
-    ADD(Register, Register, Register),
+    ADD(Register, Register, Register, ADDFlags),
     ADDI(Register, Immediate),
 
     MUL(Register, Register, Register),
@@ -53,27 +64,35 @@ enum Instruction {
     XOR(Register, Register, Register),
     MOV(Register, Register),
 
-    NEG(Register, Register),
+    NEG(Register, Register, NEGFlags),
 
     LD(Register, Register),
     ST(Register, Register),
 
-    JMP(Register, JMPFlag),
-    BZ(Register, Register, JMPFlag),
-    BNZ(Register, Register, JMPFlag),
-
+    JMP(Register, JMPFlags),
+    BZ(Register, Register, JMPFlags),
+    BNZ(Register, Register, JMPFlags),
+    STO(Register),
     HLT()
 }
 
 impl Instruction {
     fn from_word(word: u16) -> Instruction {
+        if word == 0xFFFF {
+            return Instruction::HLT();
+        }
+
         let opcode = word >> 12;
 
-        // opcd sc0 sc1 dst xxx
-        // 1111 111 111 111 111
+        // opcd sc0 sc1 dst s s x
+        // 1111 111 111 111 1 1 1
         let reg_x = Register::from_code((word >> 9) & 0x7);
         let reg_y = Register::from_code((word >> 6) & 0x7);
         let reg_z = Register::from_code((word >> 3) & 0x7);
+        let add_flags = ADDFlags { 
+                            first_arg_sign_extend: ((word >> 2) & 0x1) == 1,
+                            second_arg_sign_extend: ((word >> 1) & 0x1) == 1
+                        };
 
         // opcd sc0 immediate
         // 1111 111 111111111
@@ -81,10 +100,11 @@ impl Instruction {
 
         // opcd sc0 jmp r xxxxx
         // 1111 111 111 1 11111
-        let jmp_flag = JMPFlag { relative: ((word >> 5) & 1) == 1};
+        let jmp_flags = JMPFlags { relative: ((word >> 5) & 1) == 1};
+        let neg_flags = NEGFlags { signed: ((word >> 5) & 1) == 1};
 
         match opcode {
-            0x0 => Instruction::ADD(reg_x, reg_y, reg_z),
+            0x0 => Instruction::ADD(reg_x, reg_y, reg_z, add_flags),
             0x1 => Instruction::ADDI(reg_x, imm),
 
             0x2 => Instruction::MUL(reg_x, reg_y, reg_z),
@@ -95,16 +115,16 @@ impl Instruction {
             0x6 => Instruction::XOR(reg_x, reg_y, reg_z),
             0x7 => Instruction::MOV(reg_x, reg_y),
             
-            0x8 => Instruction::NEG(reg_x, reg_y),
+            0x8 => Instruction::NEG(reg_x, reg_y, neg_flags),
 
             0x9 => Instruction::LD(reg_x, reg_y),
             0xa => Instruction::ST(reg_x, reg_y),
             
-            0xb => Instruction::JMP(reg_x, jmp_flag),
-            0xc => Instruction::BZ(reg_x, reg_y, jmp_flag),
-            0xd => Instruction::BNZ(reg_x, reg_y, jmp_flag),
+            0xb => Instruction::JMP(reg_x, jmp_flags),
+            0xc => Instruction::BZ(reg_x, reg_y, jmp_flags),
+            0xd => Instruction::BNZ(reg_x, reg_y, jmp_flags),
 
-            0xf => Instruction::HLT(),
+            0xe => Instruction::STO(reg_x),
             _ => panic!("Invalid opcode")
         }
     }
@@ -119,22 +139,49 @@ struct Processor {
     sp: u16,
     fp: u16,
     ac: u16,
-    pc: u16
+    pc: u16,
+    of: bool,
+    nf: bool
 }
 
 impl Processor {
+    fn add_will_overflow(a: u16, b: u16, af: &ADDFlags, of: bool, nf: bool) -> bool {
+        let mut big_a = a as u32;
+        let mut big_b = b as u32;
+
+        if af.first_arg_sign_extend && ((big_a & 0x8000) != 0) {
+            big_a += 0x10000;
+        }
+
+        if nf || (!of && (af.second_arg_sign_extend && ((big_b & 0x8000) != 0))) {
+            big_b += 0x10000;
+        }
+
+        let seventeen_sum = (big_a + big_b) % 0x20000;
+
+        return (seventeen_sum & 0x10000) != 0
+    }
+
     fn execute_next(&mut self, rom: &[u16; 65536], ram: &mut [u16; 65536]) {
         let instruction = Instruction::from_word(rom[self.pc as usize]);
 
         match instruction {
-            Instruction::ADD(ref reg_x, ref reg_y, ref reg_z) => {
-                let new_value = self.read_register(reg_x).wrapping_add(self.read_register(reg_y));
+            Instruction::ADD(ref reg_x, ref reg_y, ref reg_z, ref add_flags) => {
+                let reg_x_value = self.read_register(reg_x);
+                let reg_y_value = self.read_register(reg_y);
+                let new_value = reg_x_value.wrapping_add(reg_y_value);
+
+                self.of = Processor::add_will_overflow(reg_x_value, reg_y_value, add_flags, self.of, self.nf);
+                self.nf = false;
                 self.write_register(reg_z, new_value);
             },
 
             Instruction::ADDI(ref reg_x, ref imm) => {
                 let reg_x_value = self.read_register(reg_x);
-                let new_value = reg_x_value.wrapping_add(imm.value as u16);
+                let new_value = reg_x_value.wrapping_add(imm.value);
+                let no_sx = ADDFlags { first_arg_sign_extend: false, second_arg_sign_extend: false };
+                self.of = Processor::add_will_overflow(reg_x_value, imm.value, &no_sx, false, false);
+                self.nf = false;
                 self.write_register(&Register::RegAC, new_value);
             },
 
@@ -145,7 +192,7 @@ impl Processor {
 
             Instruction::MULI(ref reg_x, ref imm) => {
                 let reg_x_value = self.read_register(reg_x);
-                let new_value = reg_x_value.wrapping_mul(imm.value as u16);
+                let new_value = reg_x_value.wrapping_mul(imm.value);
                 self.write_register(&Register::RegAC, new_value);
             },
 
@@ -157,13 +204,13 @@ impl Processor {
             Instruction::LD(ref reg_x, ref reg_y) => {
                 let load_address = self.read_register(reg_x) as usize;
                 let new_value = ram[load_address];
-                println!("LOADING {} from {}", new_value, load_address);
+                // println!("LOADING {} from {}", new_value, load_address);
                 self.write_register(reg_y, new_value as u16);
             },
 
             Instruction::ST(ref reg_x, ref reg_y) => {
                 let store_address = self.read_register(reg_y) as usize;
-                println!("STORING {} at {}", self.read_register(reg_x), store_address);
+                // println!("STORING {} at {}", self.read_register(reg_x), store_address);
                 ram[store_address] = self.read_register(reg_x) as u16;
             },
 
@@ -175,7 +222,11 @@ impl Processor {
                 } else {
                     self.pc = reg_x_value;
                 }
-            }
+            },
+            Instruction::STO(ref reg_x) => {
+                let of_value = self.of as u16;
+                self.write_register(reg_x, of_value);
+            },
             Instruction::BZ(ref reg_x, ref reg_y, ref jmp_flag) => {
                 let reg_x_value = self.read_register(reg_x);
                 let reg_y_value = self.read_register(reg_y);
@@ -212,11 +263,19 @@ impl Processor {
                 let new_value = self.read_register(reg_x) ^ self.read_register(reg_y);
                 self.write_register(reg_z, new_value);
             },
-            Instruction::NEG(ref reg_x, ref reg_y) => {
-                let new_value = self.read_register(reg_x).wrapping_mul(0xFFFF);
+            Instruction::NEG(ref reg_x, ref reg_y, ref neg_flags) => {
+                let old_value = self.read_register(reg_x);
+                let mut new_value = old_value.wrapping_mul(0xFFFF);
+                if neg_flags.signed && old_value == 0x8000 {
+                    self.of = true;
+                }
+                if !neg_flags.signed {
+                    self.nf = true;
+                }
                 self.write_register(reg_y, new_value);
             },
             Instruction::HLT() => {
+                println!("HLT!: {:?} {:?}", self, Instruction::from_word(rom[self.pc as usize]));
                 std::process::exit(0);
             }
         };
@@ -284,12 +343,15 @@ fn main() {
         sp: 0,
         fp: 0,
         ac: 0,
-        pc: 0
+        pc: 0,
+        of: false,
+        nf: false
     };
 
     let start = Instant::now();
-    for _ in 1..10000 {
-        println!("{:?} {:?}", processor, Instruction::from_word(rom[processor.pc as usize]));
+    //for _ in 1..10000 {
+    loop {
+        // println!("{:?} {:?}", processor, Instruction::from_word(rom[processor.pc as usize]));
         processor.execute_next(&rom, &mut ram);
     }
 
