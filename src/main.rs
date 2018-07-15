@@ -229,6 +229,7 @@ impl Processor {
             },
             Instruction::STO(ref reg_x) => {
                 let of_value = self.of as u16;
+                self.of = false;
                 self.write_register(reg_x, of_value);
             },
             Instruction::BZ(ref reg_x, ref reg_y, ref jmp_flag) => {
