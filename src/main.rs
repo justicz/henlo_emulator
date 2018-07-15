@@ -153,6 +153,9 @@ impl Processor {
             big_a += 0x10000;
         }
 
+        // If we know the second argument is negative, then go ahead and set the 17th bit
+        // Otherwise, if the second argument was signed, we can sign extend as long as `of`
+        // isn't set. `of` indicates that the negative is unrepresentable in 16 bits
         if nf || (!of && (af.second_arg_sign_extend && ((big_b & 0x8000) != 0))) {
             big_b += 0x10000;
         }
@@ -269,7 +272,7 @@ impl Processor {
                 if neg_flags.signed && old_value == 0x8000 {
                     self.of = true;
                 }
-                if !neg_flags.signed {
+                if !neg_flags.signed && old_value != 0 {
                     self.nf = true;
                 }
                 self.write_register(reg_y, new_value);
