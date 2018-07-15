@@ -165,8 +165,9 @@ impl Processor {
         return (seventeen_sum & 0x10000) != 0
     }
 
-    fn execute_next(&mut self, rom: &[u16; 65536], ram: &mut [u16; 65536]) {
+    fn execute_next(&mut self, rom: &[u16; 65536], ram: &mut [u16; 65536]) -> bool {
         let instruction = Instruction::from_word(rom[self.pc as usize]);
+        let mut should_halt = false;
 
         match instruction {
             Instruction::ADD(ref reg_x, ref reg_y, ref reg_z, ref add_flags) => {
@@ -268,22 +269,29 @@ impl Processor {
             },
             Instruction::NEG(ref reg_x, ref reg_y, ref neg_flags) => {
                 let old_value = self.read_register(reg_x);
-                let mut new_value = old_value.wrapping_mul(0xFFFF);
+                let new_value = old_value.wrapping_mul(0xFFFF);
+
+                // Indicate to the next addition instruction that,
+                // when we sign extend, we want "positive" 0x8000
                 if neg_flags.signed && old_value == 0x8000 {
                     self.of = true;
                 }
+
+                // Indicate to the next addition instruction that,
+                // when we sign extend, the 17th bit should be 1
                 if !neg_flags.signed && old_value != 0 {
                     self.nf = true;
                 }
+
                 self.write_register(reg_y, new_value);
             },
             Instruction::HLT() => {
-                println!("HLT!: {:?} {:?}", self, Instruction::from_word(rom[self.pc as usize]));
-                std::process::exit(0);
+                should_halt = true;
             }
         };
 
         self.pc = self.pc.wrapping_add(1);
+        return should_halt
     }
 
     fn write_register(&mut self, register: &Register, val: u16) {
@@ -352,12 +360,16 @@ fn main() {
     };
 
     let start = Instant::now();
-    //for _ in 1..10000 {
+
     loop {
-        // println!("{:?} {:?}", processor, Instruction::from_word(rom[processor.pc as usize]));
-        processor.execute_next(&rom, &mut ram);
+        let should_halt = processor.execute_next(&rom, &mut ram);
+        if should_halt {
+            break;
+        }
     }
 
     let elapsed = start.elapsed();
+
+    println!("Final state: {:?} {:?}", processor, Instruction::from_word(rom[processor.pc as usize]));
     println!("{:?} ms", (elapsed.as_secs() * 1_000) + (elapsed.subsec_nanos() / 1_000_000) as u64);
 }
